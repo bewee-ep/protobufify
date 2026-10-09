@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  build:
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # A bare-metal target, so that a `std` dependency sneaking in fails the build.
+          targets: thumbv8m.main-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --all-targets
+      - name: Build no_std, with each of decode and encode alone and both
+        run: |
+          for features in derive,decode derive,encode derive,decode,encode; do
+            cargo build -p protobufify --target thumbv8m.main-none-eabihf \
+              --no-default-features --features "$features"
+          done
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      - name: Check that the example's lock file is up to date
+        run: cargo run -p bookshelf --bin update-lock -- --frozen
+
+  # Publishes every crate whose `Cargo.toml` version is not on crates.io yet, after all checks
+  # passed on main. Comparing against crates.io (rather than the previous commit) also covers
+  # pushes with several commits and reruns after a failed publish.
+  publish:
+    needs: [fmt, clippy, build, test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency: publish
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish new versions
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          packages=()
+          for crate in protobufify-derive protobufify; do
+            version=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r --arg crate "$crate" '.packages[] | select(.name == $crate) | .version')
+            status=$(curl -s -o /dev/null -w '%{http_code}' \
+              -A "protobufify CI (https://github.com/${{ github.repository }})" \
+              "https://crates.io/api/v1/crates/$crate/$version")
+            case "$status" in
+              200) echo "$crate $version: already on crates.io" ;;
+              404) echo "$crate $version: publishing"; packages+=(-p "$crate") ;;
+              *) echo "$crate $version: crates.io answered $status"; exit 1 ;;
+            esac
+          done
+          # One call publishes in dependency order (protobufify-derive first) and waits until
+          # each crate is available before publishing the ones depending on it.
+          if [ ${#packages[@]} -gt 0 ]; then
+            cargo publish "${packages[@]}"
+          fi

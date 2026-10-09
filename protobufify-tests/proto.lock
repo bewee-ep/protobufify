@@ -1,0 +1,24 @@
+# Protobuf field and enum value numbers, maintained by protobufify. Commit changes.
+# Do not edit by hand: the numbers are part of the wire format.
+Book.title = 1
+Book.author = 2
+Book.pages = 3
+Book.genre = 4
+Book.tags = 5
+BookTagsList.items = 1
+Genre.GENRE_NOVEL = 1
+Genre.GENRE_POETRY = 2
+Genre.GENRE_REFERENCE = 3
+Rating.genre = 1
+Rating.stars = 2
+Recommendation.book = 1
+Recommendation.genre = 2
+Recommendation.shelves = 3
+Recommendation.surprise = 4
+Recommendation.by_author = 5
+RecommendationByAuthor.author = 1
+RecommendationByAuthor.genre = 2
+RecommendationShelvesList.items = 1
+Shelf.label = 1
+Shelf.books = 2
+Shelf.genres = 3

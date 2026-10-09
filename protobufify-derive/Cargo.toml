@@ -1,0 +1,16 @@
+[package]
+name = "protobufify-derive"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bewee-ep/protobufify"
+description = "Derive macros of protobufify"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+heck = "0.5"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
