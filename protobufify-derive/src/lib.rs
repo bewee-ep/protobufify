@@ -4,27 +4,41 @@
 mod attrs;
 mod decode;
 mod encode;
+mod errors;
+mod model;
 mod names;
-mod numbers;
 mod schema;
 mod shape;
 
 use proc_macro::TokenStream;
 use syn::{DeriveInput, parse_macro_input};
 
+/// Analyzes `input` and generates its code with `generate`; the errors of the analysis, which
+/// all three derives report alike, so that rustc shows each once.
+fn derive(
+    input: TokenStream,
+    generate: fn(&model::Model) -> proc_macro2::TokenStream,
+) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match model::analyze(&input) {
+        Ok(model) => generate(&model).into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
 /// Implements `protobufify::ProtoSchema`: records the type's proto definition, and those of the
 /// types it references, so that `protobufify::ProtoDefs::render` can write the `.proto` file.
 ///
-/// Names are the Rust identifiers, and fields, variants and enum values keep their declaration
-/// order. Field types are mapped syntactically (`Option`, `Vec`); the compiler checks that every
-/// other field type implements `ProtoSchema`.
+/// Fields, variants and enum values keep their declaration order. Field types are mapped
+/// syntactically (`Option`, `Vec`); the compiler checks that every other field type implements
+/// `ProtoSchema`. In the generated message names below, `<…>` are proto names in upper camel case.
 ///
 /// - Struct with named fields → message. `Option<T>` → `optional`, `Vec<T>` → `repeated`,
-///   `Option<Vec<T>>` → `optional` `<Struct><Field>List` wrapper message (its `repeated items`
+///   `Option<Vec<T>>` → `optional` `<Message><Field>List` wrapper message (its `repeated items`
 ///   field is number 1), so that an absent list stays distinguishable from an empty one.
 /// - Enum without fields → enum, prefixed with the enum name, plus an `…_UNSPECIFIED` zero value.
 /// - Enum with fields → message with a `oneof value`, one arm per variant. Struct variants get a
-///   payload message `<Enum><Variant>`, a `Vec<T>` payload a `<Enum><Variant>List` wrapper, unit
+///   payload message `<Enum><Arm>`, a `Vec<T>` payload a `<Enum><Arm>List` wrapper, unit
 ///   variants a `bool` arm.
 ///
 /// Every member is numbered explicitly: `#[protobufify(number = N)]` on the field or variant,
@@ -34,16 +48,19 @@ use syn::{DeriveInput, parse_macro_input};
 /// values), given twice, or reserved. Discriminants are checked by emitted constants, as only the
 /// compiler knows them.
 ///
-/// `#[protobufify(reserved(N, …), reserved_names("name", …))]` on the type (on a struct variant,
-/// for its payload message) reserves the numbers and names of removed members: no member may
+/// `#[protobufify(reserved(N, "name", …))]` on the type (on a struct variant, for its payload
+/// message) reserves the numbers and names of removed members: no member may
 /// take them, and the schema lists them as `reserved`.
+///
+/// Names are `#[protobufify(name = "…")]` on the type, field or variant, verbatim, else the Rust
+/// identifier converted to the protobuf style guide: upper camel case for types, snake case for
+/// fields and oneof arms, `<ENUM>_<VARIANT>` in upper snake case for enum values. Generated
+/// messages and enum value prefixes follow them. Every name must be a proto identifier (an ASCII
+/// letter, then ASCII letters, digits or `_`); no two members of a type may share a name, no two
+/// fields a JSON name (`page_count` and `pageCount`), and no two generated messages a name.
 #[proc_macro_derive(ProtoSchema, attributes(protobufify))]
 pub fn derive_proto_schema(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    match schema::expand(&input) {
-        Ok(tokens) => tokens.into(),
-        Err(e) => e.to_compile_error().into(),
-    }
+    derive(input, schema::expand)
 }
 
 /// Implements `protobufify::ProtoDecode` (and `ProtoDecodeMessage` for messages) on prost's wire-format
@@ -55,14 +72,10 @@ pub fn derive_proto_schema(input: TokenStream) -> TokenStream {
 ///   an absent plain field the proto3 default (an enum or a oneof has none: an error).
 /// - Enum without fields → enum; an unknown number is an error.
 /// - Enum with fields → message with a `oneof value`. Tuple variants need exactly one field;
-///   unit variants are a `bool` arm, struct variants a `<Enum><Variant>` payload message.
+///   unit variants are a `bool` arm, struct variants a `<Enum><Arm>` payload message.
 #[proc_macro_derive(ProtoDecode, attributes(protobufify))]
 pub fn derive_proto_decode(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    match decode::expand(&input) {
-        Ok(tokens) => tokens.into(),
-        Err(e) => e.to_compile_error().into(),
-    }
+    derive(input, decode::expand)
 }
 
 /// Implements `protobufify::ProtoEncode` (and `ProtoEncodeMessage` for messages) on prost's
@@ -76,14 +89,10 @@ pub fn derive_proto_decode(input: TokenStream) -> TokenStream {
 ///   packed for numbers and enums; enums and messages are always written.
 /// - Enum without fields → enum, as the value's number.
 /// - Enum with fields → message with a `oneof value` holding exactly the variant's arm: unit
-///   variants as `bool` `true`, struct variants as the `<Enum><Variant>` payload message.
+///   variants as `bool` `true`, struct variants as the `<Enum><Arm>` payload message.
 #[proc_macro_derive(ProtoEncode, attributes(protobufify))]
 pub fn derive_proto_encode(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    match encode::expand(&input) {
-        Ok(tokens) => tokens.into(),
-        Err(e) => e.to_compile_error().into(),
-    }
+    derive(input, encode::expand)
 }
 
 #[cfg(test)]
@@ -92,16 +101,12 @@ mod tests {
 
     use super::*;
 
-    /// The error messages of the derives for `input`, which all three report alike.
+    /// The error messages of the derives for `input`.
     fn errors(input: DeriveInput) -> Vec<String> {
-        let messages = |result: syn::Result<proc_macro2::TokenStream>| -> Vec<String> {
-            let error = result.expect_err("an error");
-            error.into_iter().map(|e| e.to_string()).collect()
-        };
-        let schema = messages(schema::expand(&input));
-        assert_eq!(messages(decode::expand(&input)), schema, "ProtoDecode");
-        assert_eq!(messages(encode::expand(&input)), schema, "ProtoEncode");
-        schema
+        match model::analyze(&input) {
+            Ok(_) => panic!("expected errors"),
+            Err(errors) => errors.into_iter().map(|e| e.to_string()).collect(),
+        }
     }
 
     #[test]
@@ -152,7 +157,7 @@ mod tests {
         let errors = errors(input);
 
         // then:
-        assert_eq!(errors, ["protobufify: expected `number = N`"]);
+        assert_eq!(errors, ["protobufify: expected `number`, `name`"]);
     }
 
     #[test]
@@ -166,7 +171,10 @@ mod tests {
         let errors = errors(input);
 
         // then:
-        assert_eq!(errors, ["protobufify: number the variant, not its field"]);
+        assert_eq!(
+            errors,
+            ["protobufify: number and name the variant, not its field"]
+        );
     }
 
     #[test]
@@ -179,7 +187,7 @@ mod tests {
             },
             parse_quote! {
                 #[protobufify(numbers_from_discriminants)]
-                enum Room { Hall() }
+                enum Room { #[protobufify(number = 1)] Hall(u32) }
             },
         ];
 
@@ -203,14 +211,19 @@ mod tests {
         let errors = errors(input);
 
         // then:
-        assert_eq!(errors, ["protobufify: expected `number = N`"]);
+        assert_eq!(
+            errors,
+            [
+                "protobufify: on a variant, `reserved` is that of the payload message of a struct variant; reserve arms on the enum"
+            ]
+        );
     }
 
     #[test]
     fn derives_return_all_errors_of_a_type() {
         // given:
         let input = parse_quote! {
-            #[protobufify(reserved(5), reserved_names("isbn"))]
+            #[protobufify(reserved(5, "isbn"))]
             struct Book {
                 #[protobufify(number = 0)] title: String,
                 #[protobufify(number = 5)] pages: u32,
@@ -232,5 +245,134 @@ mod tests {
                 "protobufify: `Book.author` has no number: add `#[protobufify(number = N)]`",
             ]
         );
+    }
+
+    #[test]
+    fn derives_return_error_when_name_is_not_a_proto_name() {
+        // given:
+        let input = parse_quote! {
+            struct Note { #[protobufify(number = 1, name = "4th")] text: String }
+        };
+
+        // when:
+        let errors = errors(input);
+
+        // then:
+        assert_eq!(
+            errors,
+            [
+                "protobufify: \"4th\" is not a proto name: an ASCII letter, then ASCII letters, digits or `_`"
+            ]
+        );
+    }
+
+    #[test]
+    fn derives_return_error_when_reserved_name_is_not_a_proto_name() {
+        // given:
+        let input = parse_quote! {
+            #[protobufify(reserved("4"))]
+            struct Note { #[protobufify(number = 1)] text: String }
+        };
+
+        // when:
+        let errors = errors(input);
+
+        // then:
+        assert_eq!(
+            errors,
+            [
+                "protobufify: \"4\" is not a proto name: an ASCII letter, then ASCII letters, digits or `_`"
+            ]
+        );
+    }
+
+    #[test]
+    fn derives_return_errors_when_something_is_reserved_twice() {
+        // given:
+        let inputs: [DeriveInput; 2] = [
+            parse_quote! {
+                #[protobufify(reserved(2, 2))]
+                struct Note { #[protobufify(number = 1)] text: String }
+            },
+            parse_quote! {
+                #[protobufify(reserved("isbn", "isbn"))]
+                struct Note { #[protobufify(number = 1)] text: String }
+            },
+        ];
+
+        // when:
+        let errors = inputs.map(errors);
+
+        // then:
+        assert_eq!(
+            errors,
+            [
+                ["protobufify: 2 is reserved twice"],
+                ["protobufify: `isbn` is reserved twice"]
+            ]
+        );
+    }
+
+    #[test]
+    fn derives_return_error_when_name_is_given_twice() {
+        // given:
+        let input = parse_quote! {
+            struct Note { #[protobufify(number = 1, name = "a")] #[protobufify(name = "b")] text: String }
+        };
+
+        // when:
+        let errors = errors(input);
+
+        // then:
+        assert_eq!(errors, ["protobufify: `name` given twice"]);
+    }
+
+    #[test]
+    fn derives_return_error_when_type_identifier_is_not_a_proto_name() {
+        // given:
+        let input = parse_quote! {
+            struct Größe { #[protobufify(number = 1)] value: u32 }
+        };
+
+        // when:
+        let errors = errors(input);
+
+        // then:
+        assert_eq!(
+            errors,
+            [
+                "protobufify: `Größe` is not a proto name (an ASCII letter, then ASCII letters, digits or `_`): add `#[protobufify(name = \"…\")]`"
+            ]
+        );
+    }
+
+    #[test]
+    fn derives_accept_type_identifier_that_is_not_a_proto_name_when_renamed() {
+        // given:
+        let input: DeriveInput = parse_quote! {
+            #[protobufify(name = "Size")]
+            struct Größe { #[protobufify(number = 1)] value: u32 }
+        };
+
+        // when:
+        let model = model::analyze(&input);
+
+        // then:
+        assert!(model.is_ok());
+    }
+
+    #[test]
+    fn derives_return_error_when_reserved_is_neither_a_number_nor_a_name() {
+        // given:
+        let input = parse_quote! {
+            #[protobufify(reserved(true))]
+            struct Note { #[protobufify(number = 1)] text: String }
+        };
+
+        // when:
+        let errors = errors(input);
+
+        // then:
+        assert_eq!(errors, ["protobufify: expected a number or a \"name\""]);
     }
 }

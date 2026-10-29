@@ -1,6 +1,6 @@
 use assert_matches::assert_matches;
 use protobufify::{Arm, EnumValue, Field, Kind, Label, ProtoDefs, ProtoSchema, ProtoType};
-use protobufify_tests::{Book, Genre, Loan, Material, Recommendation, Room, Shelf};
+use protobufify_tests::{Book, Genre, Loan, Material, Recommendation, Review, Room, Shelf};
 
 fn defined<T: ProtoSchema>() -> ProtoDefs {
     let mut defs = ProtoDefs::default();
@@ -291,4 +291,73 @@ enum Genre {
 
 "
     );
+}
+
+#[test]
+fn render_returns_proto_names_where_given_and_derived_from_them() {
+    // when:
+    let proto = defined::<Review>().render().to_string();
+
+    // then:
+    assert_eq!(
+        proto,
+        "\
+// A review of a book, its proto names differing from the Rust ones.
+message BookReview {
+  string reviewer = 1;
+  // A keyword in Rust, not in proto.
+  ReviewVerdict type = 2;
+  // Its list wrapper follows the proto names: `BookReviewQuotesList`.
+  optional BookReviewQuotesList quotes = 3;
+  optional Detail detail = 4;
+}
+
+message BookReviewQuotesList {
+  repeated string items = 1;
+}
+
+// Its generated messages follow the proto names of the arms.
+message Detail {
+  oneof value {
+    // The payload message `DetailRating`.
+    DetailRating rating = 1;
+    // The list wrapper `DetailPagesList`.
+    DetailPagesList pages = 2;
+  }
+}
+
+message DetailPagesList {
+  repeated uint32 items = 1;
+}
+
+message DetailRating {
+  uint32 stars = 1;
+}
+
+// Its values are prefixed with the proto name: `REVIEW_VERDICT_…`.
+enum ReviewVerdict {
+  REVIEW_VERDICT_UNSPECIFIED = 0;
+  REVIEW_VERDICT_RECOMMENDED = 1;
+  REVIEW_VERDICT_SKIP = 2;
+}
+
+"
+    );
+}
+
+#[test]
+#[should_panic(expected = "two different definitions are named `Book`")]
+fn define_panics_when_two_types_have_the_same_proto_name() {
+    // given:
+    #[derive(ProtoSchema)]
+    #[protobufify(name = "Book")]
+    #[allow(dead_code)]
+    struct Impostor {
+        #[protobufify(number = 1)]
+        isbn: String,
+    }
+    let mut defs = defined::<Book>();
+
+    // when:
+    Impostor::define(&mut defs);
 }

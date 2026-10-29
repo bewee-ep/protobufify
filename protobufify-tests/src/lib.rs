@@ -11,12 +11,13 @@ pub fn definitions() -> ProtoDefs {
     Rating::define(&mut defs);
     Location::define(&mut defs);
     Loan::define(&mut defs);
+    Review::define(&mut defs);
     defs
 }
 
 /// A book on a shelf.
 #[derive(Debug, PartialEq, ProtoSchema, ProtoDecode, ProtoEncode)]
-#[protobufify(reserved(6), reserved_names("isbn"))]
+#[protobufify(reserved(6, "isbn"))]
 pub struct Book {
     #[protobufify(number = 1)]
     pub title: String,
@@ -34,7 +35,7 @@ pub struct Book {
 
 /// What a book is about.
 #[derive(Debug, PartialEq, ProtoSchema, ProtoDecode, ProtoEncode)]
-#[protobufify(reserved(4), reserved_names("GENRE_COMICS"))]
+#[protobufify(reserved(4, "GENRE_COMICS"))]
 pub enum Genre {
     #[protobufify(number = 1)]
     Novel,
@@ -146,7 +147,7 @@ pub enum LoanStatus {
     #[protobufify(number = 7)]
     Open,
     /// The payload message `LoanStatusReturned` reserves the numbers of removed fields.
-    #[protobufify(number = 8, reserved(1, 2), reserved_names("date"))]
+    #[protobufify(number = 8, reserved(1, 2, "date"))]
     Returned {
         #[protobufify(number = 3)]
         day: u32,
@@ -155,4 +156,44 @@ pub enum LoanStatus {
     },
     #[protobufify(number = 9)]
     Overdue(u32),
+}
+
+/// A review of a book, its proto names differing from the Rust ones.
+#[derive(Debug, PartialEq, ProtoSchema, ProtoDecode, ProtoEncode)]
+#[protobufify(name = "BookReview")]
+pub struct Review {
+    #[protobufify(number = 1, name = "reviewer")]
+    pub author: String,
+    /// A keyword in Rust, not in proto.
+    #[protobufify(number = 2)]
+    pub r#type: Verdict,
+    /// Its list wrapper follows the proto names: `BookReviewQuotesList`.
+    #[protobufify(number = 3, name = "quotes")]
+    pub excerpts: Option<Vec<String>>,
+    #[protobufify(number = 4)]
+    pub detail: Option<Detail>,
+}
+
+/// Its values are prefixed with the proto name: `REVIEW_VERDICT_…`.
+#[derive(Debug, PartialEq, ProtoSchema, ProtoDecode, ProtoEncode)]
+#[protobufify(name = "ReviewVerdict")]
+pub enum Verdict {
+    #[protobufify(number = 1)]
+    Recommended,
+    #[protobufify(number = 2, name = "REVIEW_VERDICT_SKIP")]
+    NotRecommended,
+}
+
+/// Its generated messages follow the proto names of the arms.
+#[derive(Debug, PartialEq, ProtoSchema, ProtoDecode, ProtoEncode)]
+pub enum Detail {
+    /// The payload message `DetailRating`.
+    #[protobufify(number = 1, name = "rating")]
+    Score {
+        #[protobufify(number = 1)]
+        stars: u8,
+    },
+    /// The list wrapper `DetailPagesList`.
+    #[protobufify(number = 2, name = "pages")]
+    PageList(Vec<u32>),
 }

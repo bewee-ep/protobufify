@@ -54,9 +54,9 @@ pub struct Definition {
     /// The type's doc comment, empty if it has none.
     pub doc: &'static str,
     pub kind: Kind,
-    /// Numbers no member may take, those of removed ones (`#[protobufify(reserved(…))]`).
+    /// Numbers no member may take, those of removed ones (`#[protobufify(reserved(N, …))]`).
     pub reserved: &'static [u32],
-    /// Names no member may take, those of removed ones (`#[protobufify(reserved_names(…))]`).
+    /// Names no member may take, those of removed ones (`#[protobufify(reserved("name", …))]`).
     pub reserved_names: &'static [&'static str],
 }
 
@@ -109,8 +109,18 @@ pub struct ProtoDefs(pub(crate) BTreeMap<&'static str, Definition>);
 
 impl ProtoDefs {
     /// Adds `definition` unless `name` is already defined; returns whether it was added.
+    ///
+    /// # Panics
+    ///
+    /// If `name` is already defined differently: two types (or generated messages) have the
+    /// same proto name.
     pub fn insert(&mut self, name: &'static str, definition: Definition) -> bool {
-        if self.0.contains_key(name) {
+        if let Some(defined) = self.0.get(name) {
+            assert!(
+                *defined == definition,
+                "two different definitions are named `{name}`: rename a type with \
+                 `#[protobufify(name = \"…\")]`"
+            );
             return false;
         }
         self.0.insert(name, definition);
@@ -131,10 +141,30 @@ impl IntoIterator for ProtoDefs {
     }
 }
 
-/// Merges definitions; a name defined more than once is the same type, so any copy will do.
+/// Merges definitions, as [`ProtoDefs::insert`] does: a name defined alike more than once is kept
+/// once.
+///
+/// # Panics
+///
+/// If a name is defined differently, as [`ProtoDefs::insert`].
 impl FromIterator<(&'static str, Definition)> for ProtoDefs {
     fn from_iter<I: IntoIterator<Item = (&'static str, Definition)>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+        let mut defs = Self::default();
+        defs.extend(iter);
+        defs
+    }
+}
+
+/// Adds definitions, as [`ProtoDefs::insert`] does: a name already defined alike is kept once.
+///
+/// # Panics
+///
+/// If a name is defined differently, as [`ProtoDefs::insert`].
+impl Extend<(&'static str, Definition)> for ProtoDefs {
+    fn extend<I: IntoIterator<Item = (&'static str, Definition)>>(&mut self, iter: I) {
+        for (name, definition) in iter {
+            self.insert(name, definition);
+        }
     }
 }
 
@@ -276,6 +306,69 @@ mod tests {
             .collect::<ProtoDefs>()
             .render()
             .to_string()
+    }
+
+    #[test]
+    fn insert_returns_false_when_name_is_defined_alike() {
+        // given:
+        let mut defs = ProtoDefs::default();
+        defs.insert("Fixture", definition(Kind::Message(vec![])));
+
+        // when:
+        let inserted = defs.insert("Fixture", definition(Kind::Message(vec![])));
+
+        // then:
+        assert!(!inserted);
+    }
+
+    #[test]
+    #[should_panic(expected = "two different definitions are named `Fixture`")]
+    fn insert_panics_when_name_is_defined_differently() {
+        // given:
+        let mut defs = ProtoDefs::default();
+        defs.insert("Fixture", definition(Kind::Message(vec![])));
+
+        // when:
+        defs.insert("Fixture", definition(Kind::Enum(vec![])));
+    }
+
+    #[test]
+    fn collect_returns_name_defined_alike_once() {
+        // given:
+        let definitions = [
+            ("Fixture", definition(Kind::Message(vec![]))),
+            ("Fixture", definition(Kind::Message(vec![]))),
+        ];
+
+        // when:
+        let defs: ProtoDefs = definitions.into_iter().collect();
+
+        // then:
+        assert_eq!(defs.into_iter().count(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "two different definitions are named `Fixture`")]
+    fn collect_panics_when_name_is_defined_differently() {
+        // given:
+        let definitions = [
+            ("Fixture", definition(Kind::Message(vec![]))),
+            ("Fixture", definition(Kind::Enum(vec![]))),
+        ];
+
+        // when:
+        let _: ProtoDefs = definitions.into_iter().collect();
+    }
+
+    #[test]
+    #[should_panic(expected = "two different definitions are named `Fixture`")]
+    fn extend_panics_when_name_is_defined_differently() {
+        // given:
+        let mut defs = ProtoDefs::default();
+        defs.insert("Fixture", definition(Kind::Message(vec![])));
+
+        // when:
+        defs.extend([("Fixture", definition(Kind::Enum(vec![])))]);
     }
 
     #[test]

@@ -18,7 +18,7 @@ pub fn definitions() -> ProtoDefs {
 /// A book on a shelf.
 #[derive(Debug, PartialEq, ProtoSchema, ProtoDecode, ProtoEncode)]
 // Field 6 was the ISBN, since removed: neither its number nor its name may come back.
-#[protobufify(reserved(6), reserved_names("isbn"))]
+#[protobufify(reserved(6, "isbn"))]
 pub struct Book {
     #[protobufify(number = 1)]
     pub title: String,

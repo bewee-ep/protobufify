@@ -5,7 +5,8 @@ use common::message;
 use prost::encoding;
 use protobufify::{ProtoError, decode, encode};
 use protobufify_tests::{
-    Book, Genre, Loan, LoanStatus, Location, Material, Rating, Recommendation, Room, Shelf,
+    Book, Detail, Genre, Loan, LoanStatus, Location, Material, Rating, Recommendation, Review,
+    Room, Shelf, Verdict,
 };
 
 fn book(title: &str) -> Book {
@@ -460,6 +461,38 @@ fn decode_returns_error_when_oneof_is_empty() {
         Err(ProtoError::Missing {
             ty: "Recommendation",
             field: "value"
+        })
+    );
+}
+
+#[test]
+fn decode_returns_value_encoded_with_proto_names_differing_from_rust_ones() {
+    // given:
+    let review = Review {
+        author: "Ishmael".to_string(),
+        r#type: Verdict::NotRecommended,
+        excerpts: Some(vec!["Call me Ishmael.".to_string()]),
+        detail: Some(Detail::Score { stars: 2 }),
+    };
+
+    // when:
+    let decoded: Review = decode(&encode(&review)).unwrap();
+
+    // then:
+    assert_eq!(decoded, review);
+}
+
+#[test]
+fn decode_returns_error_with_proto_names_when_required_field_is_absent() {
+    // when:
+    let result = decode::<Review>(&[]);
+
+    // then:
+    assert_matches!(
+        result,
+        Err(ProtoError::Missing {
+            ty: "BookReview",
+            field: "type"
         })
     );
 }
