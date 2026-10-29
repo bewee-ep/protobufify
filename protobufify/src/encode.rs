@@ -1,55 +1,28 @@
 //! Protobuf encoding: the traits `#[derive(ProtoEncode)]` implements, and the helpers its
-//! encoders use. prost does the wire-format work; the field numbers come from the lock file.
+//! encoders use. prost does the wire-format work, the derives supply the field numbers.
 use alloc::vec::Vec;
-use core::fmt;
 
 pub use prost::bytes::BufMut;
 use prost::encoding::{self, WireType};
 
-/// Why a value could not be encoded.
-#[derive(Debug)]
-pub enum EncodeError {
-    /// A member with something to write has no number in the lock file yet (update it with
-    /// `update_lock_file`).
-    Unnumbered {
-        ty: &'static str,
-        member: &'static str,
-    },
-}
-
-impl core::error::Error for EncodeError {}
-
-impl fmt::Display for EncodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unnumbered { ty, member } => {
-                write!(f, "{ty}.{member}: no number in the lock file")
-            }
-        }
-    }
-}
+use crate::schema::LIST_ITEMS_NUMBER;
 
 /// A type a protobuf field can hold: a scalar, an enum or a message.
 pub trait ProtoEncode {
     /// Writes `self` as the field `number`: key and value.
-    fn encode_field(&self, number: u32, buf: &mut impl BufMut) -> Result<(), EncodeError>;
+    fn encode_field(&self, number: u32, buf: &mut impl BufMut);
 
     /// The length [`Self::encode_field`] writes.
     fn encoded_field_len(&self, number: u32) -> usize;
 
     /// Writes the repeated field `number`; nothing if `values` is empty.
-    fn encode_repeated(
-        values: &[Self],
-        number: u32,
-        buf: &mut impl BufMut,
-    ) -> Result<(), EncodeError>
+    fn encode_repeated(values: &[Self], number: u32, buf: &mut impl BufMut)
     where
         Self: Sized,
     {
         for value in values {
-            value.encode_field(number, buf)?;
+            value.encode_field(number, buf);
         }
-        Ok(())
     }
 
     /// The length [`Self::encode_repeated`] writes.
@@ -70,7 +43,7 @@ pub trait ProtoEncode {
 /// A type encoded as a protobuf message (a struct, or a data enum as a message with a oneof).
 pub trait ProtoEncodeMessage: ProtoEncode {
     /// Writes the fields of the message, without key and length.
-    fn encode_message(&self, buf: &mut impl BufMut) -> Result<(), EncodeError>;
+    fn encode_message(&self, buf: &mut impl BufMut);
 
     /// The length [`Self::encode_message`] writes.
     fn message_len(&self) -> usize;
@@ -81,9 +54,8 @@ macro_rules! scalars {
     ($($ty:ty => $encoding:ident, $repeated:ident, $repeated_len:ident;)*) => {
         $(
             impl ProtoEncode for $ty {
-                fn encode_field(&self, number: u32, buf: &mut impl BufMut) -> Result<(), EncodeError> {
+                fn encode_field(&self, number: u32, buf: &mut impl BufMut) {
                     encoding::$encoding::encode(number, self, buf);
-                    Ok(())
                 }
 
                 fn encoded_field_len(&self, number: u32) -> usize {
@@ -94,9 +66,8 @@ macro_rules! scalars {
                     values: &[Self],
                     number: u32,
                     buf: &mut impl BufMut,
-                ) -> Result<(), EncodeError> {
+                ) {
                     encoding::$encoding::$repeated(number, values, buf);
-                    Ok(())
                 }
 
                 fn encoded_repeated_len(values: &[Self], number: u32) -> usize {
@@ -127,7 +98,7 @@ macro_rules! narrowed {
     ($($ty:ty => $wire:ty,)*) => {
         $(
             impl ProtoEncode for $ty {
-                fn encode_field(&self, number: u32, buf: &mut impl BufMut) -> Result<(), EncodeError> {
+                fn encode_field(&self, number: u32, buf: &mut impl BufMut) {
                     <$wire>::from(*self).encode_field(number, buf)
                 }
 
@@ -139,7 +110,7 @@ macro_rules! narrowed {
                     values: &[Self],
                     number: u32,
                     buf: &mut impl BufMut,
-                ) -> Result<(), EncodeError> {
+                ) {
                     let wide: Vec<$wire> = values.iter().map(|&v| v.into()).collect();
                     <$wire>::encode_repeated(&wide, number, buf)
                 }
@@ -180,7 +151,7 @@ pub fn encode_message_field<T: ProtoEncodeMessage>(
     message: &T,
     number: u32,
     buf: &mut impl BufMut,
-) -> Result<(), EncodeError> {
+) {
     encode_length_delimiter(number, message.message_len(), buf);
     message.encode_message(buf)
 }
@@ -191,26 +162,24 @@ pub fn message_field_len<T: ProtoEncodeMessage>(message: &T, number: u32) -> usi
 }
 
 /// Writes a list field: the `<Owner><Field>List` wrapper message of the schema, whose `items`
-/// field (number `items`) holds the elements, so an absent list stays distinguishable from an
-/// empty one.
-pub fn encode_list<T: ProtoEncode>(
-    values: &[T],
-    items: u32,
-    number: u32,
-    buf: &mut impl BufMut,
-) -> Result<(), EncodeError> {
-    encode_length_delimiter(number, T::encoded_repeated_len(values, items), buf);
-    T::encode_repeated(values, items, buf)
+/// field holds the elements, so an absent list stays distinguishable from an empty one.
+pub fn encode_list<T: ProtoEncode>(values: &[T], number: u32, buf: &mut impl BufMut) {
+    encode_length_delimiter(
+        number,
+        T::encoded_repeated_len(values, LIST_ITEMS_NUMBER),
+        buf,
+    );
+    T::encode_repeated(values, LIST_ITEMS_NUMBER, buf)
 }
 
 /// The length [`encode_list`] writes.
-pub fn list_len<T: ProtoEncode>(values: &[T], items: u32, number: u32) -> usize {
-    length_delimited_len(number, T::encoded_repeated_len(values, items))
+pub fn list_len<T: ProtoEncode>(values: &[T], number: u32) -> usize {
+    length_delimited_len(number, T::encoded_repeated_len(values, LIST_ITEMS_NUMBER))
 }
 
 /// Encodes `value` as a message.
-pub fn encode<T: ProtoEncodeMessage>(value: &T) -> Result<Vec<u8>, EncodeError> {
+pub fn encode<T: ProtoEncodeMessage>(value: &T) -> Vec<u8> {
     let mut buf = Vec::with_capacity(value.message_len());
-    value.encode_message(&mut buf)?;
-    Ok(buf)
+    value.encode_message(&mut buf);
+    buf
 }

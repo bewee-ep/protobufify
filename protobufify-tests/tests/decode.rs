@@ -1,14 +1,12 @@
 mod common;
 
 use assert_matches::assert_matches;
-use common::{message, number};
+use common::message;
 use prost::encoding;
-use protobufify::{ProtoDecode, ProtoError, decode, encode};
-use protobufify_tests::{Book, Genre, Rating, Recommendation, Shelf};
-
-fn genre(value: &str) -> i32 {
-    number("Genre", value) as i32
-}
+use protobufify::{ProtoError, decode, encode};
+use protobufify_tests::{
+    Book, Genre, Loan, LoanStatus, Location, Material, Rating, Recommendation, Room, Shelf,
+};
 
 fn book(title: &str) -> Book {
     Book {
@@ -28,7 +26,7 @@ fn decode_returns_scalar_and_nested_fields() {
         books: vec![book("Moby-Dick")],
         genres: vec![],
     };
-    let bytes = encode(&shelf).unwrap();
+    let bytes = encode(&shelf);
 
     // when:
     let decoded = decode::<Shelf>(&bytes).unwrap();
@@ -44,7 +42,7 @@ fn decode_returns_enum_field() {
         genre: Some(Genre::Poetry),
         ..book("Leaves of Grass")
     };
-    let bytes = encode(&book).unwrap();
+    let bytes = encode(&book);
 
     // when:
     let decoded = decode::<Book>(&bytes).unwrap();
@@ -54,10 +52,127 @@ fn decode_returns_enum_field() {
 }
 
 #[test]
+fn decode_returns_enum_by_its_explicit_number() {
+    // given:
+    let mut bytes = Vec::new();
+    encoding::int32::encode(2, &0x201, &mut bytes);
+    encoding::int32::encode_packed(3, &[0x101, 0x201], &mut bytes);
+
+    // when:
+    let location = decode::<Location>(&bytes).unwrap();
+
+    // then:
+    assert_eq!(
+        location,
+        Location {
+            title: String::new(),
+            room: Room::Study,
+            rooms: vec![Room::Library, Room::Study],
+            material: None,
+        }
+    );
+}
+
+#[test]
+fn decode_returns_enum_value_numbered_by_attribute_over_discriminant() {
+    // given:
+    let mut bytes = Vec::new();
+    encoding::int32::encode(2, &0x301, &mut bytes);
+
+    // when:
+    let location = decode::<Location>(&bytes).unwrap();
+
+    // then:
+    assert_eq!(location.room, Room::Attic);
+}
+
+#[test]
+fn decode_returns_enum_values_numbered_by_attribute_despite_discriminants() {
+    // given:
+    let material = 4;
+    let wood = 8;
+    let decoded = |value: i32| {
+        let mut bytes = Vec::new();
+        encoding::int32::encode(2, &0x101, &mut bytes);
+        encoding::int32::encode(material, &value, &mut bytes);
+        decode::<Location>(&bytes)
+    };
+
+    // when:
+    let results = [decoded(wood), decoded(7), decoded(10)];
+
+    // then:
+    assert_matches!(
+        results,
+        [
+            Ok(Location {
+                material: Some(Material::Wood),
+                ..
+            }),
+            Ok(Location {
+                material: Some(Material::Metal),
+                ..
+            }),
+            Err(ProtoError::UnknownEnumValue {
+                ty: "Material",
+                number: 10
+            }),
+        ]
+    );
+}
+
+#[test]
+fn decode_returns_fields_and_arms_by_their_explicit_numbers() {
+    // given:
+    let mut bytes = Vec::new();
+    encoding::string::encode(10, &"Ada".to_string(), &mut bytes);
+    let mut reminders = Vec::new();
+    encoding::uint32::encode_packed(1, &[3], &mut reminders);
+    message(20, &reminders, &mut bytes);
+    let mut status = Vec::new();
+    encoding::bool::encode(7, &true, &mut status);
+    message(22, &status, &mut bytes);
+
+    // when:
+    let loan = decode::<Loan>(&bytes).unwrap();
+
+    // then:
+    assert_eq!(
+        loan,
+        Loan {
+            borrower: "Ada".to_string(),
+            book: None,
+            reminders: Some(vec![3]),
+            status: LoanStatus::Open,
+        }
+    );
+}
+
+#[test]
+fn decode_returns_payload_field_by_its_explicit_number() {
+    // given:
+    let loan = Loan {
+        borrower: String::new(),
+        book: None,
+        reminders: None,
+        status: LoanStatus::Returned {
+            day: 12,
+            late: true,
+        },
+    };
+
+    // when:
+    let decoded = decode::<Loan>(&encode(&loan)).unwrap();
+
+    // then:
+    assert_eq!(decoded, loan);
+}
+
+#[test]
 fn decode_returns_error_when_enum_value_is_unknown() {
     // given:
     let mut bytes = Vec::new();
-    encoding::int32::encode(number("Book", "genre"), &999, &mut bytes);
+    encoding::int32::encode(4, &999, &mut bytes);
 
     // when:
     let result = decode::<Book>(&bytes);
@@ -79,7 +194,7 @@ fn decode_returns_narrowed_integer() {
         pages: Some(635),
         ..book("Moby-Dick")
     };
-    let bytes = encode(&book).unwrap();
+    let bytes = encode(&book);
 
     // when:
     let decoded = decode::<Book>(&bytes).unwrap();
@@ -92,7 +207,7 @@ fn decode_returns_narrowed_integer() {
 fn decode_returns_error_when_integer_is_out_of_range() {
     // given:
     let mut bytes = Vec::new();
-    encoding::uint32::encode(number("Book", "pages"), &70_000, &mut bytes);
+    encoding::uint32::encode(3, &70_000, &mut bytes);
 
     // when:
     let result = decode::<Book>(&bytes);
@@ -104,7 +219,7 @@ fn decode_returns_error_when_integer_is_out_of_range() {
 #[test]
 fn decode_returns_none_when_optional_list_is_absent() {
     // given:
-    let bytes = encode(&book("Untagged")).unwrap();
+    let bytes = encode(&book("Untagged"));
 
     // when:
     let decoded = decode::<Book>(&bytes).unwrap();
@@ -117,7 +232,7 @@ fn decode_returns_none_when_optional_list_is_absent() {
 fn decode_returns_empty_list_when_optional_list_is_empty() {
     // given:
     let mut bytes = Vec::new();
-    message("Book", "tags", &[], &mut bytes);
+    message(5, &[], &mut bytes);
 
     // when:
     let book = decode::<Book>(&bytes).unwrap();
@@ -134,7 +249,7 @@ fn decode_returns_optional_list_items() {
         tags: Some(tags.clone()),
         ..book("Moby-Dick")
     };
-    let bytes = encode(&book).unwrap();
+    let bytes = encode(&book);
 
     // when:
     let decoded = decode::<Book>(&bytes).unwrap();
@@ -146,9 +261,9 @@ fn decode_returns_optional_list_items() {
 #[test]
 fn decode_returns_repeated_enums_when_packed() {
     // given:
-    let genres = [genre("GENRE_NOVEL"), genre("GENRE_REFERENCE")];
+    let genres = [1, 3];
     let mut bytes = Vec::new();
-    encoding::int32::encode_packed(number("Shelf", "genres"), &genres, &mut bytes);
+    encoding::int32::encode_packed(3, &genres, &mut bytes);
 
     // when:
     let shelf = decode::<Shelf>(&bytes).unwrap();
@@ -160,9 +275,9 @@ fn decode_returns_repeated_enums_when_packed() {
 #[test]
 fn decode_returns_repeated_enums_when_unpacked() {
     // given:
-    let genres = [genre("GENRE_NOVEL"), genre("GENRE_REFERENCE")];
+    let genres = [1, 3];
     let mut bytes = Vec::new();
-    encoding::int32::encode_repeated(number("Shelf", "genres"), &genres, &mut bytes);
+    encoding::int32::encode_repeated(3, &genres, &mut bytes);
 
     // when:
     let shelf = decode::<Shelf>(&bytes).unwrap();
@@ -176,7 +291,7 @@ fn decode_returns_known_fields_when_unknown_field_is_present() {
     // given:
     let mut bytes = Vec::new();
     encoding::uint64::encode(9_999, &42, &mut bytes);
-    bytes.extend(encode(&book("Moby-Dick")).unwrap());
+    bytes.extend(encode(&book("Moby-Dick")));
 
     // when:
     let book = decode::<Book>(&bytes).unwrap();
@@ -202,7 +317,7 @@ fn decode_returns_defaults_when_required_scalars_are_absent() {
 fn decode_returns_error_when_required_enum_is_absent() {
     // given:
     let mut bytes = Vec::new();
-    encoding::uint32::encode(number("Rating", "stars"), &4, &mut bytes);
+    encoding::uint32::encode(2, &4, &mut bytes);
 
     // when:
     let result = decode::<Rating>(&bytes);
@@ -221,11 +336,7 @@ fn decode_returns_error_when_required_enum_is_absent() {
 fn decode_returns_error_when_input_is_truncated() {
     // given:
     let mut bytes = Vec::new();
-    encoding::encode_key(
-        number("Shelf", "books"),
-        encoding::WireType::LengthDelimited,
-        &mut bytes,
-    );
+    encoding::encode_key(2, encoding::WireType::LengthDelimited, &mut bytes);
     encoding::encode_varint(10, &mut bytes);
 
     // when:
@@ -239,7 +350,7 @@ fn decode_returns_error_when_input_is_truncated() {
 fn decode_returns_oneof_message_arm() {
     // given:
     let recommendation = Recommendation::Book(book("Moby-Dick"));
-    let bytes = encode(&recommendation).unwrap();
+    let bytes = encode(&recommendation);
 
     // when:
     let decoded = decode::<Recommendation>(&bytes).unwrap();
@@ -252,7 +363,7 @@ fn decode_returns_oneof_message_arm() {
 fn decode_returns_oneof_enum_arm() {
     // given:
     let recommendation = Recommendation::Genre(Genre::Novel);
-    let bytes = encode(&recommendation).unwrap();
+    let bytes = encode(&recommendation);
 
     // when:
     let decoded = decode::<Recommendation>(&bytes).unwrap();
@@ -269,7 +380,7 @@ fn decode_returns_oneof_list_arm() {
         books: vec![],
         genres: vec![Genre::Poetry],
     }]);
-    let bytes = encode(&recommendation).unwrap();
+    let bytes = encode(&recommendation);
 
     // when:
     let decoded = decode::<Recommendation>(&bytes).unwrap();
@@ -281,7 +392,7 @@ fn decode_returns_oneof_list_arm() {
 #[test]
 fn decode_returns_oneof_unit_arm() {
     // given:
-    let bytes = encode(&Recommendation::Surprise).unwrap();
+    let bytes = encode(&Recommendation::Surprise);
 
     // when:
     let decoded = decode::<Recommendation>(&bytes).unwrap();
@@ -294,7 +405,7 @@ fn decode_returns_oneof_unit_arm() {
 fn decode_returns_oneof_unit_arm_when_false() {
     // given:
     let mut bytes = Vec::new();
-    encoding::bool::encode(number("Recommendation", "surprise"), &false, &mut bytes);
+    encoding::bool::encode(4, &false, &mut bytes);
 
     // when:
     let recommendation = decode::<Recommendation>(&bytes).unwrap();
@@ -310,7 +421,7 @@ fn decode_returns_oneof_struct_arm() {
         author: "Herman Melville".to_string(),
         genre: Some(Genre::Novel),
     };
-    let bytes = encode(&recommendation).unwrap();
+    let bytes = encode(&recommendation);
 
     // when:
     let decoded = decode::<Recommendation>(&bytes).unwrap();
@@ -323,7 +434,7 @@ fn decode_returns_oneof_struct_arm() {
 fn decode_returns_defaults_when_struct_arm_fields_are_absent() {
     // given:
     let mut bytes = Vec::new();
-    message("Recommendation", "by_author", &[], &mut bytes);
+    message(5, &[], &mut bytes);
 
     // when:
     let recommendation = decode::<Recommendation>(&bytes).unwrap();
@@ -351,19 +462,4 @@ fn decode_returns_error_when_oneof_is_empty() {
             field: "value"
         })
     );
-}
-
-#[test]
-fn locked_returns_true_for_every_decodable_fixture() {
-    // when:
-    let locked = [
-        <Book as ProtoDecode>::LOCKED,
-        <Genre as ProtoDecode>::LOCKED,
-        <Shelf as ProtoDecode>::LOCKED,
-        <Recommendation as ProtoDecode>::LOCKED,
-        <Rating as ProtoDecode>::LOCKED,
-    ];
-
-    // then:
-    assert_eq!(locked, [true; 5]);
 }

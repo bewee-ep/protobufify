@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         genres: vec![Genre::Novel],
     };
 
-    let bytes = encode(&shelf)?;
+    let bytes = encode(&shelf);
     println!("{} bytes: {bytes:02x?}", bytes.len());
     let decoded: Shelf = decode(&bytes)?;
     println!("{decoded:#?}");

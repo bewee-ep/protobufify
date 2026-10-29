@@ -1,3 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["protobufify", "protobufify-derive", "protobufify-tests", "examples/bookshelf"]
+members = [
+    "protobufify",
+    "protobufify-derive",
+    "protobufify-tests",
+    "examples/bookshelf",
+]

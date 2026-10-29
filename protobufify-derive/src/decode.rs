@@ -1,30 +1,25 @@
 //! `#[derive(ProtoDecode)]`.
 
-use std::collections::HashMap;
-
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Error, Fields, ext::IdentExt, spanned::Spanned};
 
-use crate::lock::{lock_dependency, lock_numbers};
-use crate::names::{
-    LIST_ITEMS, arm_name, enum_value_name, field_list_name, payload_name, variant_list_name,
+use crate::attrs::{Reserved, container};
+use crate::names::payload_name;
+use crate::numbers::{
+    Number, NumberedVariant, ValueNumbers, arm_numbers, field_numbers, value_numbers,
 };
-use crate::shape::{FieldShape, vec_inner};
+use crate::shape::{FieldShape, is_fieldless, vec_inner};
 
-/// The local, the decoding match arm (if the member has a number) and the struct field
-/// initializer of each named field; `owner` names the message in the lock file.
+/// The local, the decoding match arm and the struct field initializer of each named field of
+/// the message `owner`, which reserves `reserved`.
 struct DecodedFields {
     locals: Vec<TokenStream>,
     arms: Vec<TokenStream>,
     inits: Vec<TokenStream>,
 }
 
-fn decoded_fields(
-    owner: &str,
-    fields: &Fields,
-    numbers: &HashMap<String, u32>,
-) -> syn::Result<DecodedFields> {
+fn decoded_fields(owner: &str, fields: &Fields, reserved: &Reserved) -> syn::Result<DecodedFields> {
     let Fields::Named(fields) = fields else {
         return Err(Error::new(
             fields.span(),
@@ -37,51 +32,42 @@ fn decoded_fields(
         arms: vec![],
         inits: vec![],
     };
-    for (i, field) in fields.named.iter().enumerate() {
+    for (i, (field, n)) in field_numbers(owner, fields, reserved)?
+        .into_iter()
+        .enumerate()
+    {
         let ident = field.ident.as_ref().expect("named field");
         let name = ident.unraw().to_string();
         let local = format_ident!("field_{i}");
-        let number = numbers.get(&format!("{owner}.{name}"));
         let ty = &field.ty;
         match FieldShape::of(ty) {
             FieldShape::OptionalList(item) => {
-                let wrapper = field_list_name(owner, &name);
                 out.locals.push(quote!(let mut #local: #ty = None;));
-                if let (Some(n), Some(items)) =
-                    (number, numbers.get(&format!("{wrapper}.{LIST_ITEMS}")))
-                {
-                    out.arms.push(quote! {
-                        #n => #proto::merge_list::<#item>(&mut #local, #items, wire_type, buf, ctx.clone())?
-                    });
-                }
+                out.arms.push(quote! {
+                    #n => #proto::merge_list::<#item>(&mut #local, wire_type, buf, ctx.clone())?
+                });
                 out.inits.push(quote!(#ident: #local));
             }
             FieldShape::Optional(inner) => {
                 out.locals.push(quote!(let mut #local: #ty = None;));
-                if let Some(n) = number {
-                    out.arms.push(quote! {
-                        #n => <#inner as #proto::ProtoDecode>::merge(&mut #local, wire_type, buf, ctx.clone())?
-                    });
-                }
+                out.arms.push(quote! {
+                    #n => <#inner as #proto::ProtoDecode>::merge(&mut #local, wire_type, buf, ctx.clone())?
+                });
                 out.inits.push(quote!(#ident: #local));
             }
             FieldShape::Repeated(item) => {
                 out.locals
                     .push(quote!(let mut #local: #ty = ::protobufify::__private::Vec::new();));
-                if let Some(n) = number {
-                    out.arms.push(quote! {
-                        #n => <#item as #proto::ProtoDecode>::merge_repeated(&mut #local, wire_type, buf, ctx.clone())?
-                    });
-                }
+                out.arms.push(quote! {
+                    #n => <#item as #proto::ProtoDecode>::merge_repeated(&mut #local, wire_type, buf, ctx.clone())?
+                });
                 out.inits.push(quote!(#ident: #local));
             }
             FieldShape::Plain(_) => {
                 out.locals.push(quote!(let mut #local: Option<#ty> = None;));
-                if let Some(n) = number {
-                    out.arms.push(quote! {
-                        #n => <#ty as #proto::ProtoDecode>::merge(&mut #local, wire_type, buf, ctx.clone())?
-                    });
-                }
+                out.arms.push(quote! {
+                    #n => <#ty as #proto::ProtoDecode>::merge(&mut #local, wire_type, buf, ctx.clone())?
+                });
                 out.inits.push(quote! {
                     #ident: match #local {
                         Some(value) => value,
@@ -109,14 +95,11 @@ fn decode_loop(arms: &[TokenStream]) -> TokenStream {
 }
 
 /// `ProtoDecode` of a message type, decoded by its `ProtoDecodeMessage::decode_message` `body`.
-fn message_impl(input: &DeriveInput, locked: bool, body: TokenStream) -> TokenStream {
+fn message_impl(input: &DeriveInput, body: TokenStream) -> TokenStream {
     let ident = &input.ident;
     let proto = quote!(::protobufify::__private);
-    let lock_dependency = lock_dependency();
     quote! {
         impl #proto::ProtoDecode for #ident {
-            const LOCKED: bool = #locked;
-
             fn merge(
                 value: &mut Option<Self>,
                 wire_type: #proto::WireType,
@@ -137,7 +120,6 @@ fn message_impl(input: &DeriveInput, locked: bool, body: TokenStream) -> TokenSt
                 buf: &mut #proto::Bytes,
                 ctx: #proto::DecodeContext,
             ) -> Result<Self, #proto::ProtoError> {
-                #lock_dependency
                 #body
             }
         }
@@ -151,12 +133,10 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
             "ProtoDecode: generic types are not supported",
         ));
     }
-    let numbers = lock_numbers();
+    let container = container(input)?;
+    let reserved = &container.reserved;
     let ident = &input.ident;
     let name = ident.to_string();
-    let locked = numbers
-        .keys()
-        .any(|key| key.starts_with(&format!("{name}.")));
     let proto = quote!(::protobufify::__private);
     match &input.data {
         Data::Struct(data) => {
@@ -164,24 +144,29 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                 locals,
                 arms,
                 inits,
-            } = decoded_fields(&name, &data.fields, &numbers)?;
+            } = decoded_fields(&name, &data.fields, reserved)?;
             let decode = decode_loop(&arms);
             let body = quote! {
                 #(#locals)*
                 #decode
                 Ok(Self { #(#inits,)* })
             };
-            Ok(message_impl(input, locked, body))
+            Ok(message_impl(input, body))
         }
-        Data::Enum(data) if data.variants.iter().all(|v| v.fields.is_empty()) => {
-            let mut arms = vec![];
-            for variant in &data.variants {
+        Data::Enum(data) if is_fieldless(data) => {
+            let ValueNumbers { values, checks } =
+                value_numbers(ident, data, container.numbers_from_discriminants, reserved)?;
+            let arms = values.into_iter().map(|(variant, number)| {
                 let v = &variant.ident;
-                if let Some(n) = numbers.get(&format!("{name}.{}", enum_value_name(&name, v))) {
-                    let n = *n as i32;
-                    arms.push(quote!(#n => Self::#v));
+                match number {
+                    Number::Discriminant => quote!(n if n == Self::#v as i32 => Self::#v),
+                    // In `1..=i32::MAX`, checked when numbering.
+                    Number::Explicit(n) => {
+                        let n = n as i32;
+                        quote!(#n => Self::#v)
+                    }
                 }
-            }
+            });
             let from_number = quote! {
                 |number: i32| -> Result<Self, #proto::ProtoError> {
                     Ok(match number {
@@ -190,18 +175,14 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                     })
                 }
             };
-            let lock_dependency = lock_dependency();
             Ok(quote! {
                 impl #proto::ProtoDecode for #ident {
-                    const LOCKED: bool = #locked;
-
                     fn merge(
                         value: &mut Option<Self>,
                         wire_type: #proto::WireType,
                         buf: &mut #proto::Bytes,
                         ctx: #proto::DecodeContext,
                     ) -> Result<(), #proto::ProtoError> {
-                        #lock_dependency
                         let mut number = None;
                         <i32 as #proto::ProtoDecode>::merge(&mut number, wire_type, buf, ctx)?;
                         *value = number.map(#from_number).transpose()?;
@@ -226,23 +207,19 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                         None
                     }
                 }
+
+                #checks
             })
         }
         Data::Enum(data) => {
             let mut arms = vec![];
-            for variant in &data.variants {
+            for numbered in arm_numbers(&name, data, reserved)? {
+                let NumberedVariant {
+                    variant,
+                    number: n,
+                    payload_reserved,
+                } = numbered;
                 let v = &variant.ident;
-                if let Fields::Unnamed(f) = &variant.fields
-                    && f.unnamed.len() != 1
-                {
-                    return Err(Error::new(
-                        f.span(),
-                        "ProtoDecode: tuple variants need exactly one field",
-                    ));
-                }
-                let Some(n) = numbers.get(&format!("{name}.{}", arm_name(v))) else {
-                    continue;
-                };
                 let f = match &variant.fields {
                     // A `bool` arm: being set selects the variant, whatever its value.
                     Fields::Unit => {
@@ -261,7 +238,11 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                             locals,
                             arms: payload_arms,
                             inits,
-                        } = decoded_fields(&payload_name(&name, v), &variant.fields, &numbers)?;
+                        } = decoded_fields(
+                            &payload_name(&name, v),
+                            &variant.fields,
+                            &payload_reserved,
+                        )?;
                         let decode = decode_loop(&payload_arms);
                         arms.push(quote! {
                             #n => {
@@ -274,16 +255,18 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                         });
                         continue;
                     }
-                    Fields::Unnamed(f) => f,
+                    Fields::Unnamed(f) if f.unnamed.len() == 1 => f,
+                    Fields::Unnamed(f) => {
+                        return Err(Error::new(
+                            f.span(),
+                            "ProtoDecode: tuple variants need exactly one field",
+                        ));
+                    }
                 };
                 let inner = &f.unnamed[0].ty;
                 let merge = match vec_inner(inner) {
                     Some(item) => {
-                        let wrapper = variant_list_name(&name, v);
-                        let Some(items) = numbers.get(&format!("{wrapper}.{LIST_ITEMS}")) else {
-                            continue;
-                        };
-                        quote!(#proto::merge_list::<#item>(&mut payload, #items, wire_type, buf, ctx.clone())?)
+                        quote!(#proto::merge_list::<#item>(&mut payload, wire_type, buf, ctx.clone())?)
                     }
                     None => {
                         quote!(<#inner as #proto::ProtoDecode>::merge(&mut payload, wire_type, buf, ctx.clone())?)
@@ -303,7 +286,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                 #decode
                 value.ok_or(#proto::ProtoError::Missing { ty: #name, field: "value" })
             };
-            Ok(message_impl(input, locked, body))
+            Ok(message_impl(input, body))
         }
         Data::Union(_) => Err(Error::new(
             input.span(),

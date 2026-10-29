@@ -1,11 +1,13 @@
 //! Protobuf decoding: the traits `#[derive(ProtoDecode)]` implements, and the helpers its
-//! decoders use. prost does the wire-format work; the field numbers come from the lock file.
+//! decoders use. prost does the wire-format work, the derives supply the field numbers.
 use alloc::{string::String, vec::Vec};
 use core::fmt;
 
 pub use prost::bytes::{Buf, Bytes};
 use prost::encoding;
 pub use prost::encoding::{DecodeContext, WireType, decode_key, skip_field};
+
+use crate::schema::LIST_ITEMS_NUMBER;
 
 /// Why protobuf bytes could not be decoded.
 #[derive(Debug)]
@@ -47,10 +49,6 @@ impl fmt::Display for ProtoError {
 
 /// A type a protobuf field can hold: a scalar, an enum or a message.
 pub trait ProtoDecode: Sized {
-    /// Whether the lock file has numbers for the type; a type without any decodes nothing (an
-    /// unexported type, or one the lock file has not been updated for yet).
-    const LOCKED: bool = true;
-
     /// Merges one occurrence of a field of this type into `value`.
     fn merge(
         value: &mut Option<Self>,
@@ -200,11 +198,10 @@ pub fn absent_message<T: ProtoDecodeMessage>() -> Option<T> {
 }
 
 /// Merges a list field into `value`: the `<Owner><Field>List` wrapper message of the schema,
-/// whose `items` field (number `items`) holds the elements, so an absent list stays
-/// distinguishable from an empty one.
+/// whose `items` field holds the elements, so an absent list stays distinguishable from an
+/// empty one.
 pub fn merge_list<T: ProtoDecode>(
     value: &mut Option<Vec<T>>,
-    items: u32,
     wire_type: WireType,
     buf: &mut Bytes,
     ctx: DecodeContext,
@@ -213,7 +210,7 @@ pub fn merge_list<T: ProtoDecode>(
     let list = value.get_or_insert_with(Vec::new);
     while payload.has_remaining() {
         let (number, wire_type) = decode_key(&mut payload)?;
-        if number == items {
+        if number == LIST_ITEMS_NUMBER {
             T::merge_repeated(list, wire_type, &mut payload, ctx.clone())?;
         } else {
             skip_field(wire_type, number, &mut payload, ctx.clone())?;

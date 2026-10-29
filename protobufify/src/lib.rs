@@ -2,35 +2,31 @@
 //!
 //! - `#[derive(ProtoSchema)]` describes a type in protobuf terms; [`ProtoDefs::render`] writes the
 //!   `.proto` schema of the types you export.
-//! - [`ProtoLock`] (the checked-in lock file) pins the number of every field and enum value, so
-//!   that inserting, reordering or removing them never changes the wire format.
+//! - Every field, oneof arm and enum value is numbered explicitly, with
+//!   `#[protobufify(number = N)]` or, for an enum `#[protobufify(numbers_from_discriminants)]`,
+//!   by its discriminants, so that inserting, reordering or removing members never changes the
+//!   wire format. A member without a number is a compile error, and so is one that takes a
+//!   number of a removed member, listed in `#[protobufify(reserved(…))]`.
 //! - `#[derive(ProtoDecode)]` (feature `decode`) decodes protobuf messages of that schema into
 //!   the same types, `#[derive(ProtoEncode)]` (feature `encode`) encodes them, both on top of
 //!   [prost](https://docs.rs/prost)'s wire-format primitives.
-//!
-//! The derives read the lock file at compile time: `proto.lock` in the crate root, or the path in
-//! the `PROTOBUFIFY_LOCK_FILE` environment variable, relative to the crate root.
 
 #![no_std]
 
 extern crate alloc;
-#[cfg(feature = "std")]
-extern crate std;
 
+#[cfg(doctest)]
+mod compile_fail;
 #[cfg(feature = "decode")]
 mod decode;
 #[cfg(feature = "encode")]
 mod encode;
-mod lock;
 mod schema;
 
 #[cfg(feature = "decode")]
 pub use decode::{ProtoDecode, ProtoDecodeMessage, ProtoError, decode};
 #[cfg(feature = "encode")]
-pub use encode::{EncodeError, ProtoEncode, ProtoEncodeMessage, encode};
-pub use lock::{LOCK_FILE_HEADER, LockAction, LockChange, ParseLockError, ProtoLock};
-#[cfg(feature = "std")]
-pub use lock::{LockFileError, update_lock_file};
+pub use encode::{ProtoEncode, ProtoEncodeMessage, encode};
 #[cfg(feature = "derive")]
 pub use protobufify_derive::{ProtoDecode, ProtoEncode, ProtoSchema};
 pub use schema::{
@@ -43,6 +39,8 @@ pub mod __private {
     pub use alloc::vec;
     pub use alloc::vec::Vec;
 
+    pub use crate::schema::LIST_ITEMS_NUMBER;
+
     #[cfg(feature = "decode")]
     pub use crate::decode::{
         Buf, Bytes, DecodeContext, ProtoDecode, ProtoDecodeMessage, ProtoError, WireType,
@@ -50,7 +48,7 @@ pub mod __private {
     };
     #[cfg(feature = "encode")]
     pub use crate::encode::{
-        BufMut, EncodeError, ProtoEncode, ProtoEncodeMessage, encode_length_delimiter, encode_list,
+        BufMut, ProtoEncode, ProtoEncodeMessage, encode_length_delimiter, encode_list,
         encode_message_field, length_delimited_len, list_len, message_field_len,
     };
 }

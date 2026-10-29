@@ -1,5 +1,5 @@
 //! The proto names of the export, shared by `ProtoSchema` (which defines them) and
-//! `ProtoDecode`/`ProtoEncode` (which look their numbers up in the lock file by `<Type>.<member>`).
+//! `ProtoDecode`/`ProtoEncode` (which name them in errors).
 
 use heck::{ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
 use syn::Ident;

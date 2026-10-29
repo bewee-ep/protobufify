@@ -1,11 +1,11 @@
 [package]
 name = "protobufify"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/bewee-ep/protobufify"
 readme = "../README.md"
-description = "Protocol Buffers for existing Rust types: derive the .proto schema, pin field numbers in a lock file, encode and decode messages"
+description = "Protocol Buffers for existing Rust types: derive the .proto schema, encode and decode messages"
 
 [features]
 default = ["std", "derive", "decode", "encode"]
@@ -15,7 +15,7 @@ decode = ["dep:prost"]
 encode = ["dep:prost"]
 
 [dependencies]
-protobufify-derive = { path = "../protobufify-derive", version = "0.1.0", optional = true }
+protobufify-derive = { path = "../protobufify-derive", version = "0.2.0", optional = true }
 # Pinned to a minor version: the derived decoders and encoders use `prost::encoding`, which prost keeps
 # `#[doc(hidden)]` for its own derive and does not cover by semver.
 prost = { version = "~0.14.4", default-features = false, optional = true }

@@ -1,6 +1,6 @@
 //! How a field type maps to protobuf, recognized syntactically (`Option`, `Vec`).
 
-use syn::{Error, GenericArgument, PathArguments, Type, spanned::Spanned};
+use syn::{DataEnum, Error, Fields, GenericArgument, PathArguments, Type, spanned::Spanned};
 
 fn single_argument<'a>(args: &'a PathArguments, ty: &Type) -> syn::Result<&'a Type> {
     if let PathArguments::AngleBracketed(args) = args
@@ -69,4 +69,12 @@ impl<'a> FieldShape<'a> {
             },
         }
     }
+}
+
+/// Whether the enum has only unit variants, which makes it a proto enum rather than a message
+/// with a `oneof`.
+pub(crate) fn is_fieldless(data: &DataEnum) -> bool {
+    data.variants
+        .iter()
+        .all(|v| matches!(v.fields, Fields::Unit))
 }
